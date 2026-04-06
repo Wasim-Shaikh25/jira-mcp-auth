@@ -1,0 +1,42 @@
+{
+  "name": "@jira-mcp-oauth/jira-mcp-oauth",
+  "version": "0.1.0",
+  "description": "Model Context Protocol server for Jira Data Center: PAT or browser SSO cookies for REST, with optional Confluence attachment helpers.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": "./src/index.js",
+  "files": [
+    "src",
+    "scripts",
+    ".env.example",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jira-mcp-oauth/jira-mcp-oauth.git"
+  },
+  "homepage": "https://github.com/jira-mcp-oauth/jira-mcp-oauth#readme",
+  "bugs": {
+    "url": "https://github.com/jira-mcp-oauth/jira-mcp-oauth/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "jira",
+    "atlassian",
+    "cursor",
+    "sso"
+  ],
+  "scripts": {
+    "start": "node src/index.js",
+    "login": "node scripts/jira-login.mjs",
+    "install-browser": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "node-fetch": "^3.3.2",
+    "playwright": "^1.43.0"
+  }
+}

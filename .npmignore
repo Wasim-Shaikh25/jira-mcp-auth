@@ -1,0 +1,43 @@
+# Dependencies & package manager
+node_modules/
+
+# Local secrets and session data
+.env
+.env.*
+!.env.example
+cookies/
+*.pem
+
+# Logs and caches
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.cache/
+.npm/
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Tests / coverage (if added later)
+coverage/
+.nyc_output/
+
+# Build artifacts
+dist/
+build/
+*.tgz
+
+# Docs not shipped (keep README via package.json "files")
+docs/
+
+# Cursor / local MCP project metadata (not the published package)
+mcps/
