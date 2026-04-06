@@ -1,6 +1,6 @@
 {
   "name": "@svasimahmed283/jira-mcp-oauth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Model Context Protocol server for Jira Data Center: PAT or browser SSO cookies for REST, with optional Confluence attachment helpers.",
   "type": "module",
   "engines": {
