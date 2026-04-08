@@ -4,6 +4,16 @@ A **[Model Context Protocol](https://modelcontextprotocol.io/) (MCP)** server th
 
 ---
 
+## See also (sibling projects)
+
+| Project | Purpose |
+|---------|---------|
+| **Confluence MCP** | [confluence-mcp-oauth](https://github.com/Wasim-Shaikh25/confluence-mcp-oauth) — Confluence REST + optional SSO (`@svasimahmed283/confluence-sso-mcp` on npm). Same PAT/cookie design as this server. |
+| **GitHub Enterprise launcher** | [mcp-github-enterprise-launcher](https://github.com/Wasim-Shaikh25/mcp-github-enterprise-launcher) — npm stdio wrapper around a `github-mcp-server` binary (optional `vendor/` bundle). |
+| **SonarQube launcher** | [mcp-sonarqube-launcher](https://github.com/Wasim-Shaikh25/mcp-sonarqube-launcher) — npm stdio wrapper around a SonarQube MCP `.jar` (optional `vendor/` bundle). |
+
+---
+
 ## What this project is
 
 | | |
@@ -324,6 +334,8 @@ The first **`npx`** run may take a moment while dependencies install. If your **
 | **`jira_login` times out in chat** | Increase **`JIRA_LOGIN_WAIT_SECONDS`** or run **`npm run login`** in a terminal (same config). |
 | **Browser closes immediately** | Session detection requires **JSON** from **`/myself`**, not **200 HTML** after redirects. **`Execution context was destroyed`** during navigation is caught and **retried** in the poll loop. If SSO still fails, use **PAT** + **`PREFER_SSO_COOKIES=0`**. |
 | **Auth scheme** | This server uses **`Authorization: Bearer`** for PAT/API tokens (common on **Data Center**). **Jira Cloud** API tokens are often used with email + API token as **Basic** auth in some clients; if your Cloud site only accepts Basic, Bearer may fail—check Atlassian docs for your site. |
+| **`ENOENT` on `cookies/*.lock`** | Ensure the **`cookies/`** directory exists under the installed package (some `npx` extracts can omit it). Create **`cookies`** next to **`src/`** or use a **local `node …/src/index.js`** install. |
+| **Half-installed `@modelcontextprotocol/sdk` under `_npx`** | Clear **`%LocalAppData%\npm-cache\_npx`** for that hash, or run from a **git clone** with **`npm install`** so **`node_modules`** is complete. |
 
 ---
 
