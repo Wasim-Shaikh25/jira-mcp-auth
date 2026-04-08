@@ -341,7 +341,7 @@ The first **`npx`** run may take a moment while dependencies install. If your **
 
 ## Repository and npm metadata
 
-Package **`repository`**, **`homepage`**, and **`bugs`** in **`package.json`** default to **`https://github.com/jira-mcp-oauth/jira-mcp-oauth`**. If your GitHub URL differs, update those fields before publishing.
+Package **`repository`**, **`homepage`**, and **`bugs`** in **`package.json`** point to **`https://github.com/Wasim-Shaikh25/jira-mcp-auth`**. Update those fields if you fork to another org.
 
 ---
 
