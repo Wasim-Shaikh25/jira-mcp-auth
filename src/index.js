@@ -6,7 +6,7 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { loginWithSSO } from "./auth.js";
+import { loginWithSSO, loginToolResultText } from "./auth.js";
 import {
   executeJql,
   getTicket,
@@ -16,6 +16,7 @@ import {
   editTicket,
   deleteTicket,
   listProjects,
+  listBoards,
   assignTicket,
   queryAssignable,
   getAllStatuses,
@@ -33,7 +34,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "jira_login",
       description:
-        "SSO login in a browser; saves cookies for REST calls when PAT is not set or as fallback after PAT fails (401/403). Optional if JIRA_PAT is configured.",
+        "SSO login in a browser (Playwright); saves cookies for REST. If IdP redirects or automation block a session, use JIRA_PAT + PREFER_SSO_COOKIES=0 in mcp.json or delete the reported cookie file. When JIRA_PAT is set, REST prefers it unless PREFER_SSO_COOKIES and cookies override.",
       inputSchema: { type: "object", properties: {} },
     },
     {
@@ -53,7 +54,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "get_ticket",
-      description: "Get full issue JSON from Jira REST API (v3).",
+      description:
+        "Get full issue JSON from Jira. Uses JIRA_REST_API_PREFIX (e.g. /rest/api/2 or /rest/api/3). If you see 401, set JIRA_PAT or run jira_login once.",
       inputSchema: {
         type: "object",
         properties: {
@@ -126,13 +128,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "create_ticket",
-      description: "Create an issue (description is plain text; stored as ADF).",
+      description:
+        "Create an issue in a project. **project** is optional if the destination is unambiguous: set **JIRA_DEFAULT_PROJECT** in MCP env, pass **boardName** or **boardId** (Jira Software Agile boards), or omit when your account sees exactly one project across boards—otherwise the tool fails with a clear error listing boards (use **list_boards**). Description is plain text: v3 → ADF, v2 → string (JIRA_REST_API_PREFIX, JIRA_DESCRIPTION_FORMAT). Does not set sprint/backlog placement—use the UI or Agile REST for that.",
       inputSchema: {
         type: "object",
         properties: {
-          project: { type: "string", description: "Project key" },
+          project: {
+            type: "string",
+            description:
+              "Project key (e.g. PROJ). If omitted, resolution uses JIRA_DEFAULT_PROJECT, boardName/boardId, or a single board project.",
+          },
+          boardName: {
+            type: "string",
+            description:
+              "Jira Software board name (substring match). Resolves the board's project key when project is not set.",
+          },
+          boardId: {
+            type: "string",
+            description:
+              "Agile board id as string (from list_boards or the board URL). Resolves the board's project key when project is not set.",
+          },
           summary: { type: "string", description: "Ticket summary" },
-          description: { type: "string", description: "Ticket description" },
+          description: { type: "string", description: "Ticket description (plain text)" },
           issuetype: {
             type: "string",
             description: "Issue type name (Bug, Story, Task, etc.)",
@@ -142,7 +159,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: "Parent issue key (for subtasks)",
           },
         },
-        required: ["project", "summary", "description", "issuetype"],
+        required: ["summary", "description", "issuetype"],
       },
     },
     {
@@ -177,13 +194,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "list_projects",
-      description: "List Jira projects (project search API).",
+      description:
+        "List Jira projects. Uses /project/search on REST v3; on REST v2 uses GET /project (v2 has no project search endpoint).",
       inputSchema: {
         type: "object",
         properties: {
           maxResults: {
             type: "number",
             description: "Maximum number of projects (default 50, max 100).",
+          },
+        },
+      },
+    },
+    {
+      name: "list_boards",
+      description:
+        "List Jira Software boards (GET /rest/agile/1.0/board). Use names/ids with create_ticket when project is ambiguous. Returns 404 if Agile is disabled or your site has no Software boards—in that case pass **project** or **JIRA_DEFAULT_PROJECT**.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          maxResults: {
+            type: "number",
+            description: "Maximum boards (default 50, max 50).",
           },
         },
       },
@@ -273,12 +305,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const args = request.params.arguments ?? {};
 
   if (name === "jira_login") {
-    await loginWithSSO();
+    const result = await loginWithSSO();
     return {
       content: [
         {
           type: "text",
-          text: "SSO session saved. You can use search, read, and (if permitted) create/update/delete tools.",
+          text: loginToolResultText(result),
         },
       ],
     };
@@ -318,8 +350,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === "create_ticket") {
+    const projectRaw = args.project;
+    const project =
+      projectRaw != null && String(projectRaw).trim() !== ""
+        ? String(projectRaw)
+        : undefined;
+    const boardName =
+      args.boardName != null && String(args.boardName).trim() !== ""
+        ? String(args.boardName)
+        : undefined;
+    const boardId =
+      args.boardId != null && String(args.boardId).trim() !== ""
+        ? args.boardId
+        : undefined;
     const data = await createTicket({
-      project: String(args.project),
+      project,
+      boardName,
+      boardId,
       summary: String(args.summary),
       description: String(args.description),
       issuetype: String(args.issuetype),
@@ -353,6 +400,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "list_projects") {
     const maxResults = typeof args.maxResults === "number" ? args.maxResults : 50;
     const data = await listProjects(maxResults);
+    return {
+      content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+    };
+  }
+
+  if (name === "list_boards") {
+    const maxResults = typeof args.maxResults === "number" ? args.maxResults : 50;
+    const data = await listBoards(maxResults);
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
     };

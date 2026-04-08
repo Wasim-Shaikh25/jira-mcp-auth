@@ -1,19 +1,38 @@
 import fs from "fs";
+import path from "node:path";
 import fetch from "node-fetch";
 import { CONFIG } from "./config.js";
-import { adfToPlainText, plainTextToAdf } from "./adf.js";
+import { withCookieFileLockSync } from "./cookie-lock.js";
+import { adfToPlainText } from "./adf.js";
+import { issueDescriptionPayload } from "./issue-description.js";
+import { listProjectsPathAndQuery } from "./jira-rest.js";
+import {
+  filterBoardsByName,
+  getBoardValues,
+  uniqueProjectKeysFromBoards,
+} from "./jira-boards.js";
 import { fetchConfluenceAttachmentByFilename } from "./confluence-fetch.js";
 
+function readCookieFileSync(filePath) {
+  return withCookieFileLockSync(filePath, () => {
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, "utf8");
+    const cookies = JSON.parse(raw);
+    if (!Array.isArray(cookies)) {
+      throw new Error(`Invalid cookie file; delete ${filePath} and run jira_login again.`);
+    }
+    return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  });
+}
+
 function loadCookieHeader() {
-  if (!fs.existsSync(CONFIG.COOKIE_FILE)) return null;
-  const raw = fs.readFileSync(CONFIG.COOKIE_FILE, "utf8");
-  const cookies = JSON.parse(raw);
-  if (!Array.isArray(cookies)) {
-    throw new Error(
-      "Invalid cookie file; delete cookies/session.json and run jira_login again."
-    );
+  const primary = readCookieFileSync(CONFIG.COOKIE_FILE);
+  if (primary) return primary;
+  const legacy = path.join(CONFIG.PROJECT_ROOT, "cookies", "session.json");
+  if (legacy !== CONFIG.COOKIE_FILE && fs.existsSync(legacy)) {
+    return readCookieFileSync(legacy);
   }
-  return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  return null;
 }
 
 const jsonHeaders = {
@@ -39,8 +58,7 @@ function shouldRetryWithCookie(status) {
 }
 
 /**
- * PAT first (if set), then SSO session cookies on 401/403.
- * If only cookies exist, uses cookies only.
+ * Default: SSO cookies on disk → use only cookies (no PAT). Set PREFER_SSO_COOKIES=0 for PAT-first.
  */
 async function fetchWithAuth(url, init = {}) {
   const patHeaders = authHeadersForPat();
@@ -53,6 +71,18 @@ async function fetchWithAuth(url, init = {}) {
       ...extra,
     },
   });
+
+  if (CONFIG.preferSsoCookies && cookieHeaders) {
+    const res = await fetch(url, merge(cookieHeaders));
+    if (res.ok) return res;
+    if (shouldRetryWithCookie(res.status)) {
+      const text = await res.text();
+      throw new Error(
+        `Jira HTTP ${res.status}: ${text.slice(0, 400)} SSO session expired, rejected, or never captured (browser automation/IdP). Run jira_login again, or set JIRA_PAT + PREFER_SSO_COOKIES=0 in mcp.json, or delete ${CONFIG.COOKIE_FILE} to use PAT.`
+      );
+    }
+    return res;
+  }
 
   if (patHeaders) {
     const res = await fetch(url, merge(patHeaders));
@@ -71,10 +101,24 @@ async function fetchWithAuth(url, init = {}) {
   );
 }
 
+function hintForJiraStatus(status) {
+  if (status === 401) {
+    return " Unauthorized: run jira_login, or set JIRA_PAT and PREFER_SSO_COOKIES=0 (stale cookies/session-*.json can block PAT until deleted).";
+  }
+  if (status === 403) {
+    return " Forbidden: authenticated but missing permission for this operation.";
+  }
+  if (status === 400) {
+    return " Bad request: check project key, issue type, and description format (v2 needs plain string; v3 uses ADF — see JIRA_DESCRIPTION_FORMAT).";
+  }
+  return "";
+}
+
 async function parseResponse(res) {
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`Jira HTTP ${res.status}: ${text.slice(0, 800)}`);
+    const hint = hintForJiraStatus(res.status);
+    throw new Error(`Jira HTTP ${res.status}: ${text.slice(0, 800)}${hint}`);
   }
   if (!text || !text.trim()) {
     return null;
@@ -115,6 +159,131 @@ export async function requestDelete(pathAndQuery) {
   });
   if (res.status === 204) return { deleted: true };
   return parseResponse(res);
+}
+
+/** Jira Software Agile REST (`/rest/agile/1.0/...`), same auth as core REST. */
+export async function requestAgileJson(pathAndQuery) {
+  const url = `${CONFIG.JIRA_BASE_URL}${pathAndQuery}`;
+  const res = await fetchWithAuth(url, {
+    headers: { ...jsonHeaders },
+  });
+  return parseResponse(res);
+}
+
+/**
+ * Resolve project key for create: explicit project → JIRA_DEFAULT_PROJECT → boardId → boardName → single board project → error with list.
+ * @param {{ project?: string; boardName?: string; boardId?: string | number }} p
+ */
+export async function resolveProjectKeyForCreate(p) {
+  const explicit = p.project && String(p.project).trim();
+  if (explicit) {
+    console.error(`[jira-mcp] create_ticket: using explicit project key "${explicit}".`);
+    return explicit;
+  }
+
+  const envDefault = process.env.JIRA_DEFAULT_PROJECT?.trim();
+  if (envDefault) {
+    console.error(`[jira-mcp] create_ticket: using JIRA_DEFAULT_PROJECT="${envDefault}".`);
+    return envDefault;
+  }
+
+  let boardsPayload;
+  try {
+    boardsPayload = await requestAgileJson(`/rest/agile/1.0/board?maxResults=50`);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `create_ticket: could not load boards (Jira Software Agile API). ${msg}\n` +
+        `Pass **project** (project key), **boardName**, or **boardId**, or set **JIRA_DEFAULT_PROJECT** in MCP env. If this site has no Software boards, **project** is required.`
+    );
+  }
+
+  const boards = getBoardValues(boardsPayload);
+  if (boards.length === 0) {
+    throw new Error(
+      `create_ticket: no boards returned and no **project** provided. Pass **project**, **boardName**, or **boardId**, or set **JIRA_DEFAULT_PROJECT**.`
+    );
+  }
+
+  if (p.boardId != null && String(p.boardId).trim() !== "") {
+    const id = String(p.boardId).trim();
+    let board = boards.find((b) => String(b.id) === id) ?? null;
+    if (!board) {
+      try {
+        board = await requestAgileJson(`/rest/agile/1.0/board/${encodeURIComponent(id)}`);
+      } catch {
+        board = null;
+      }
+    }
+    const key = board?.location?.projectKey;
+    if (key) {
+      console.error(
+        `[jira-mcp] create_ticket: resolved project "${key}" from board id ${id} (${board.name ?? "?"}).`
+      );
+      return key;
+    }
+    throw new Error(
+      `create_ticket: could not resolve project from boardId "${id}". Pass **project** or use **list_boards**.`
+    );
+  }
+
+  if (p.boardName != null && String(p.boardName).trim() !== "") {
+    const matches = filterBoardsByName(boards, String(p.boardName));
+    if (matches.length === 1) {
+      const key = matches[0].location?.projectKey;
+      if (key) {
+        console.error(
+          `[jira-mcp] create_ticket: resolved project "${key}" from board name "${matches[0].name}".`
+        );
+        return key;
+      }
+    }
+    if (matches.length > 1) {
+      const lines = matches
+        .map((m) => `- "${m.name}" (board id=${m.id}, project=${m.location?.projectKey ?? "?"})`)
+        .join("\n");
+      throw new Error(
+        `create_ticket: multiple boards match boardName "${p.boardName}". Pass a more specific **boardName**, **boardId**, or **project**.\n${lines}`
+      );
+    }
+    throw new Error(
+      `create_ticket: no board matched boardName "${p.boardName}". Use **list_boards**, or pass **project** (project key).`
+    );
+  }
+
+  const unique = uniqueProjectKeysFromBoards(boards);
+  if (unique.length === 1) {
+    console.error(
+      `[jira-mcp] create_ticket: auto-selected project "${unique[0]}" (only one project among accessible boards).`
+    );
+    return unique[0];
+  }
+  if (unique.length === 0) {
+    throw new Error(
+      `create_ticket: boards list had no project keys. Pass **project** explicitly or set **JIRA_DEFAULT_PROJECT**.`
+    );
+  }
+
+  const lines = boards
+    .filter((b) => b.location?.projectKey)
+    .slice(0, 30)
+    .map((b) => `- Board "${b.name}" (id=${b.id}) → project **${b.location.projectKey}**`)
+    .join("\n");
+  throw new Error(
+    `create_ticket: multiple projects on your boards — choose one.\n` +
+      `Pass **project** (project key), **boardName**, or **boardId**, or set env **JIRA_DEFAULT_PROJECT**.\n` +
+      `Tip: run **list_boards**.\n` +
+      (lines ? `Boards:\n${lines}\n` : "")
+  );
+}
+
+/**
+ * List Jira Software boards (Agile API). Use to pick boardName / boardId for create_ticket.
+ * @param {number} [maxResults]
+ */
+export async function listBoards(maxResults = 50) {
+  const mr = Math.min(Math.max(1, maxResults), 50);
+  return requestAgileJson(`/rest/agile/1.0/board?maxResults=${mr}`);
 }
 
 const ISSUE_FIELDS_FULL = [
@@ -199,13 +368,21 @@ export async function getOnlyTicketNameAndDescription(issueIdOrKey) {
 }
 
 /**
- * @param {{ project: string; summary: string; description: string; issuetype: string; parent?: string }} p
+ * @param {{ project?: string; boardName?: string; boardId?: string | number; summary: string; description: string; issuetype: string; parent?: string }} p
  */
 export async function createTicket(p) {
+  const projectKey = await resolveProjectKeyForCreate({
+    project: p.project,
+    boardName: p.boardName,
+    boardId: p.boardId,
+  });
+  console.error(
+    `[jira-mcp] create_ticket: POST issue project=${projectKey} issuetype=${p.issuetype} summary=${JSON.stringify(p.summary).slice(0, 80)}`
+  );
   const fields = {
-    project: { key: p.project },
+    project: { key: projectKey },
     summary: p.summary,
-    description: plainTextToAdf(p.description),
+    description: issueDescriptionPayload(p.description, CONFIG.descriptionFormat),
     issuetype: { name: p.issuetype },
   };
   if (p.parent) {
@@ -221,7 +398,7 @@ export async function editTicket(p) {
   const key = encodeURIComponent(p.issueIdOrKey);
   const fields = {};
   if (p.summary != null) fields.summary = p.summary;
-  if (p.description != null) fields.description = plainTextToAdf(p.description);
+  if (p.description != null) fields.description = issueDescriptionPayload(p.description, CONFIG.descriptionFormat);
   if (p.labels != null) fields.labels = p.labels;
   if (p.parent != null) fields.parent = { key: p.parent };
   if (Object.keys(fields).length === 0) {
@@ -243,7 +420,20 @@ export async function deleteTicket(issueIdOrKey) {
  */
 export async function listProjects(maxResults = 50) {
   const mr = Math.min(Math.max(1, maxResults), 100);
-  return requestJson(`${CONFIG.restApiPrefix}/project/search?maxResults=${mr}`);
+  const { pathAndQuery, mode } = listProjectsPathAndQuery(CONFIG.restApiPrefix, mr);
+  if (mode === "v2-array") {
+    const all = await requestJson(pathAndQuery);
+    const arr = Array.isArray(all) ? all : [];
+    const values = arr.slice(0, mr);
+    return {
+      startAt: 0,
+      maxResults: mr,
+      total: arr.length,
+      isLast: arr.length <= mr,
+      values,
+    };
+  }
+  return requestJson(pathAndQuery);
 }
 
 /**
@@ -323,7 +513,8 @@ export async function addAttachment(issueIdOrKey, filename, buffer, contentType)
 
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`Jira HTTP ${res.status}: ${text.slice(0, 800)}`);
+    const hint = hintForJiraStatus(res.status);
+    throw new Error(`Jira HTTP ${res.status}: ${text.slice(0, 800)}${hint}`);
   }
   try {
     return JSON.parse(text);

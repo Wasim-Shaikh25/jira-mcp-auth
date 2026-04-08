@@ -1,7 +1,7 @@
 {
   "name": "@svasimahmed283/jira-mcp-oauth",
-  "version": "0.1.1",
-  "description": "Model Context Protocol server for Jira Data Center: PAT or browser SSO cookies for REST, with optional Confluence attachment helpers.",
+  "version": "0.1.2",
+  "description": "Model Context Protocol server for Atlassian Jira: PAT or browser SSO cookies for REST, with optional Confluence attachment helpers—configure for your own Jira site (Cloud or Data Center).",
   "type": "module",
   "engines": {
     "node": ">=18"
@@ -10,6 +10,7 @@
   "files": [
     "src",
     "scripts",
+    "tests",
     ".env.example",
     "README.md"
   ],
@@ -21,10 +22,14 @@
   "bugs": {
     "url": "https://github.com/jira-mcp-oauth/jira-mcp-oauth/issues"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "mcp",
     "model-context-protocol",
     "jira",
+    "jira-cloud",
     "atlassian",
     "cursor",
     "sso"
@@ -32,6 +37,8 @@
   "scripts": {
     "start": "node src/index.js",
     "login": "node scripts/jira-login.mjs",
+    "test": "node --test tests/",
+    "validate": "node scripts/validate.mjs",
     "install-browser": "npx playwright install chromium"
   },
   "dependencies": {

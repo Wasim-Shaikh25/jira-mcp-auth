@@ -1,11 +1,12 @@
 /**
- * Fetch Confluence attachments: same auth order as confluence-mcp-oauth
- * (PAT first if set, else cookies; retry with cookies on 401/403 after PAT).
- * Env: CONFLUENCE_BASE_URL + CONFLUENCE_PAT from mcpServers.jira-sso.env (or shared cookies/session.json).
+ * Confluence attachments from the Jira MCP package: same auth rules as confluence-mcp-oauth
+ * (per-instance cookie file under cookies/cf-*.json, PAT, prefer SSO when cookie file exists).
  */
 import fs from "fs";
+import path from "node:path";
 import fetch from "node-fetch";
 import { CONFIG } from "./config.js";
+import { withCookieFileLockSync } from "./cookie-lock.js";
 
 const jsonHeaders = {
   Accept: "application/json",
@@ -13,19 +14,36 @@ const jsonHeaders = {
   "X-Atlassian-Token": "no-check",
 };
 
-function loadCookieHeader(cookieFile) {
-  if (!fs.existsSync(cookieFile)) return null;
-  const raw = fs.readFileSync(cookieFile, "utf8");
-  const cookies = JSON.parse(raw);
-  if (!Array.isArray(cookies)) return null;
-  return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+function readCookieFileSync(filePath) {
+  if (!filePath) return null;
+  return withCookieFileLockSync(filePath, () => {
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, "utf8");
+    const cookies = JSON.parse(raw);
+    if (!Array.isArray(cookies)) return null;
+    return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  });
+}
+
+function confluenceCookieFile() {
+  const specific = CONFIG.getConfluenceAttachmentCookiePath();
+  if (specific) {
+    const c = readCookieFileSync(specific);
+    if (c) return c;
+    const legacy = path.join(CONFIG.PROJECT_ROOT, "cookies", "session.json");
+    if (legacy !== specific && fs.existsSync(legacy)) {
+      return readCookieFileSync(legacy);
+    }
+    return null;
+  }
+  return readCookieFileSync(CONFIG.COOKIE_FILE);
 }
 
 function confluenceBase() {
   const b = process.env.CONFLUENCE_BASE_URL?.replace(/\/$/, "").trim();
   if (!b) {
     throw new Error(
-      "CONFLUENCE_BASE_URL is not set. Add it to mcpServers.jira-sso.env for add_attachment_from_confluence."
+      "CONFLUENCE_BASE_URL is not set. Add it to mcp.json env for add_attachment_from_confluence."
     );
   }
   return b;
@@ -38,7 +56,7 @@ function authHeadersForPat() {
 }
 
 function authHeadersForCookie() {
-  const cookie = loadCookieHeader(CONFIG.COOKIE_FILE);
+  const cookie = confluenceCookieFile();
   if (!cookie) return null;
   return { Cookie: cookie };
 }
@@ -55,6 +73,19 @@ async function fetchWithAuth(url, init = {}) {
     headers: { ...init.headers, ...extra },
   });
 
+  if (CONFIG.preferSsoCookies && cookieHeaders) {
+    const res = await fetch(url, merge(cookieHeaders));
+    if (res.ok) return res;
+    if (shouldRetryWithCookie(res.status)) {
+      const text = await res.text();
+      const cf = CONFIG.getConfluenceAttachmentCookiePath() || CONFIG.COOKIE_FILE;
+      throw new Error(
+        `Confluence HTTP ${res.status}: ${text.slice(0, 400)} Confluence SSO expired or not captured. Run confluence_login in the Confluence MCP, or set CONFLUENCE_PAT + PREFER_SSO_COOKIES=0, or delete ${cf}.`
+      );
+    }
+    return res;
+  }
+
   if (patHeaders) {
     const res = await fetch(url, merge(patHeaders));
     if (res.ok || !cookieHeaders || !shouldRetryWithCookie(res.status)) {
@@ -66,7 +97,7 @@ async function fetchWithAuth(url, init = {}) {
     return fetch(url, merge(cookieHeaders));
   }
   throw new Error(
-    "Confluence not authenticated. Set CONFLUENCE_PAT (or CONFLUENCE_API_TOKEN), or run jira_login once to save cookies."
+    "Confluence not authenticated. Set CONFLUENCE_PAT (or CONFLUENCE_API_TOKEN), or save SSO cookies for Confluence."
   );
 }
 
@@ -89,7 +120,6 @@ async function requestJson(pathAndQuery) {
   return parseJson(res);
 }
 
-/** @param {string} downloadPath */
 async function requestBinary(downloadPath) {
   const url = /^https?:\/\//i.test(downloadPath)
     ? downloadPath
@@ -107,11 +137,6 @@ async function requestBinary(downloadPath) {
   return { buffer: buf, contentType };
 }
 
-/**
- * @param {string} pageId
- * @param {number} limit
- * @param {number} start
- */
 export async function listConfluenceAttachments(pageId, limit = 100, start = 0) {
   const id = encodeURIComponent(pageId);
   const lim = Math.min(Math.max(1, limit), 100);
@@ -122,10 +147,6 @@ export async function listConfluenceAttachments(pageId, limit = 100, start = 0) 
   );
 }
 
-/**
- * @param {string} pageId
- * @param {string} filename
- */
 export async function fetchConfluenceAttachmentByFilename(pageId, filename) {
   const data = await listConfluenceAttachments(pageId, 100, 0);
   const results = data?.results ?? [];
