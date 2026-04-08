@@ -8,7 +8,7 @@ A **[Model Context Protocol](https://modelcontextprotocol.io/) (MCP)** server th
 
 | Project | Purpose |
 |---------|---------|
-| **Confluence MCP** | [confluence-mcp-oauth](https://github.com/Wasim-Shaikh25/confluence-mcp-oauth) — Confluence REST + optional SSO (`@svasimahmed283/confluence-sso-mcp` on npm). Same PAT/cookie design as this server. |
+| **Confluence MCP** | [confluence-mcp-oauth](https://github.com/Wasim-Shaikh25/confluence-mcp-oauth) — Confluence REST + optional SSO ([`confluence-sso-mcp`](https://www.npmjs.com/package/confluence-sso-mcp) on npm). Same PAT/cookie design as this server. |
 | **GitHub Enterprise launcher** | [mcp-github-enterprise-launcher](https://github.com/Wasim-Shaikh25/mcp-github-enterprise-launcher) — npm stdio wrapper around a `github-mcp-server` binary (optional `vendor/` bundle). |
 | **SonarQube launcher** | [mcp-sonarqube-launcher](https://github.com/Wasim-Shaikh25/mcp-sonarqube-launcher) — npm stdio wrapper around a SonarQube MCP `.jar` (optional `vendor/` bundle). |
 
@@ -118,13 +118,13 @@ npm run install-browser
 After the package is on npm, you do **not** need to clone the repo. Cursor (or your host) can start the server with:
 
 ```bash
-npx @jira-mcp-oauth/jira-mcp-oauth
+npx -y jira-mcp-oauth
 ```
 
 Pin a version if you want reproducibility:
 
 ```bash
-npx @jira-mcp-oauth/jira-mcp-oauth@0.1.0
+npx -y jira-mcp-oauth@0.1.4
 ```
 
 The process speaks MCP on **stdio**. In normal use the **IDE starts it**; you only run the command yourself to verify installation or debug.
@@ -157,7 +157,7 @@ Put **non-secret** URLs and timeouts in **`env`**. Put **PATs only** here as wel
   "mcpServers": {
     "jira-sso": {
       "command": "npx",
-      "args": ["-y", "@jira-mcp-oauth/jira-mcp-oauth"],
+      "args": ["-y", "jira-mcp-oauth"],
       "env": {
         "JIRA_BASE_URL": "https://jira.company.com",
         "JIRA_LOGIN_WAIT_SECONDS": "90",
@@ -295,21 +295,21 @@ The client maps these to the tool calls above.
 
 ```bash
 npm pack
-# Creates e.g. jira-mcp-oauth-jira-mcp-oauth-0.1.0.tgz
+# Creates e.g. jira-mcp-oauth-0.1.4.tgz
 ```
 
 **Windows (cmd):**
 
 ```bat
 set JIRA_BASE_URL=https://jira.example.com
-npx .\jira-mcp-oauth-jira-mcp-oauth-0.1.0.tgz
+npx .\jira-mcp-oauth-0.1.4.tgz
 ```
 
 **macOS / Linux:**
 
 ```bash
 export JIRA_BASE_URL=https://jira.example.com
-npx ./jira-mcp-oauth-jira-mcp-oauth-0.1.0.tgz
+npx ./jira-mcp-oauth-0.1.4.tgz
 ```
 
 The first **`npx`** run may take a moment while dependencies install. If your **`mcp.json`** already defines **`JIRA_BASE_URL`**, the process may stay running on stdio (normal for MCP).
@@ -342,6 +342,8 @@ The first **`npx`** run may take a moment while dependencies install. If your **
 ## Repository and npm metadata
 
 Package **`repository`**, **`homepage`**, and **`bugs`** in **`package.json`** point to **`https://github.com/Wasim-Shaikh25/jira-mcp-auth`**. Update those fields if you fork to another org.
+
+The npm package name is **`jira-mcp-oauth`** (unscoped). If you previously published under **`@svasimahmed283/jira-mcp-oauth`**, keep that version for backward compatibility or deprecate it on npm after publishing this name.
 
 ---
 
