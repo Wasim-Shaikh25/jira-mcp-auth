@@ -25,7 +25,7 @@ import {
 } from "./jira.js";
 
 const server = new Server(
-  { name: "jira-oauth-mcp", version: "0.1.4" },
+  { name: "jira-oauth-mcp", version: "0.1.5" },
   { capabilities: { tools: {} } }
 );
 
