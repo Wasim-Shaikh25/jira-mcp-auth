@@ -1,6 +1,6 @@
 /**
- * Confluence attachments from the Jira MCP package: same auth rules as confluence-mcp-oauth
- * (per-instance cookie file under cookies/cf-*.json, PAT, prefer SSO when cookie file exists).
+ * Confluence attachments from the Jira MCP package: SSO-cookie auth only, using a
+ * per-instance cookie file under cookies/cf-*.json.
  */
 import fs from "fs";
 import path from "node:path";
@@ -49,56 +49,31 @@ function confluenceBase() {
   return b;
 }
 
-function authHeadersForPat() {
-  const pat = CONFIG.getConfluencePatToken();
-  if (!pat) return null;
-  return { Authorization: `Bearer ${pat}` };
-}
-
 function authHeadersForCookie() {
   const cookie = confluenceCookieFile();
   if (!cookie) return null;
   return { Cookie: cookie };
 }
 
-function shouldRetryWithCookie(status) {
-  return status === 401 || status === 403;
-}
-
 async function fetchWithAuth(url, init = {}) {
-  const patHeaders = authHeadersForPat();
   const cookieHeaders = authHeadersForCookie();
-  const merge = (extra) => ({
+  if (!cookieHeaders) {
+    throw new Error(
+      "Confluence not authenticated. Save SSO cookies for Confluence (log in to the Confluence MCP), then retry."
+    );
+  }
+  const res = await fetch(url, {
     ...init,
-    headers: { ...init.headers, ...extra },
+    headers: { ...init.headers, ...cookieHeaders },
   });
-
-  if (CONFIG.preferSsoCookies && cookieHeaders) {
-    const res = await fetch(url, merge(cookieHeaders));
-    if (res.ok) return res;
-    if (shouldRetryWithCookie(res.status)) {
-      const text = await res.text();
-      const cf = CONFIG.getConfluenceAttachmentCookiePath() || CONFIG.COOKIE_FILE;
-      throw new Error(
-        `Confluence HTTP ${res.status}: ${text.slice(0, 400)} Confluence SSO expired or not captured. Run confluence_login in the Confluence MCP, or set CONFLUENCE_PAT + PREFER_SSO_COOKIES=0, or delete ${cf}.`
-      );
-    }
-    return res;
+  if (res.status === 401 || res.status === 403) {
+    const text = await res.text();
+    const cf = CONFIG.getConfluenceAttachmentCookiePath() || CONFIG.COOKIE_FILE;
+    throw new Error(
+      `Confluence HTTP ${res.status}: ${text.slice(0, 400)} Confluence SSO expired or not captured. Log in to the Confluence MCP again, or delete ${cf} and re-login.`
+    );
   }
-
-  if (patHeaders) {
-    const res = await fetch(url, merge(patHeaders));
-    if (res.ok || !cookieHeaders || !shouldRetryWithCookie(res.status)) {
-      return res;
-    }
-    return fetch(url, merge(cookieHeaders));
-  }
-  if (cookieHeaders) {
-    return fetch(url, merge(cookieHeaders));
-  }
-  throw new Error(
-    "Confluence not authenticated. Set CONFLUENCE_PAT (or CONFLUENCE_API_TOKEN), or save SSO cookies for Confluence."
-  );
+  return res;
 }
 
 async function parseJson(res) {

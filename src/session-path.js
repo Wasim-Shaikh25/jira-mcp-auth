@@ -23,6 +23,24 @@ export function resolveJiraCookiePath(projectRoot, baseUrl, mcpServerKey) {
 }
 
 /**
+ * Path for the cached Agile boards/projects discovered at login, named per server
+ * key or host (mirrors the cookie file naming so it aligns per-instance).
+ */
+export function resolveJiraBoardsCachePath(projectRoot, baseUrl, mcpServerKey) {
+  let label = "default";
+  if (typeof mcpServerKey === "string" && mcpServerKey.trim()) {
+    label = mcpServerKey;
+  } else {
+    try {
+      label = new URL(baseUrl).hostname;
+    } catch {
+      label = "default";
+    }
+  }
+  return path.join(projectRoot, "cookies", `boards-${sanitizeSessionLabel(label)}.json`);
+}
+
+/**
  * Cookie file for Confluence REST from the Jira MCP package (separate from Jira SSO cookies).
  * Name mirrors confluence-mcp-oauth (`session-<label>.json`) but uses `cf-` prefix to avoid clashes.
  */

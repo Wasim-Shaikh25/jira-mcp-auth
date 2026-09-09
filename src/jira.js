@@ -47,63 +47,36 @@ function authHeadersForCookie() {
   return { Cookie: cookie };
 }
 
-function authHeadersForPat() {
-  const pat = CONFIG.getPatToken();
-  if (!pat) return null;
-  return { Authorization: `Bearer ${pat}` };
-}
-
 function shouldRetryWithCookie(status) {
   return status === 401 || status === 403;
 }
 
 /**
- * Default: SSO cookies on disk → use only cookies (no PAT). Set PREFER_SSO_COOKIES=0 for PAT-first.
+ * Cookie-only auth. Complete jira_login once to save SSO cookies.
  */
 async function fetchWithAuth(url, init = {}) {
-  const patHeaders = authHeadersForPat();
   const cookieHeaders = authHeadersForCookie();
-
-  const merge = (extra) => ({
+  if (!cookieHeaders) {
+    throw new Error(
+      "Not authenticated. Run the jira_login tool once to complete SSO and save cookies."
+    );
+  }
+  const res = await fetch(url, {
     ...init,
-    headers: {
-      ...init.headers,
-      ...extra,
-    },
+    headers: { ...init.headers, ...cookieHeaders },
   });
-
-  if (CONFIG.preferSsoCookies && cookieHeaders) {
-    const res = await fetch(url, merge(cookieHeaders));
-    if (res.ok) return res;
-    if (shouldRetryWithCookie(res.status)) {
-      const text = await res.text();
-      throw new Error(
-        `Jira HTTP ${res.status}: ${text.slice(0, 400)} SSO session expired, rejected, or never captured (browser automation/IdP). Run jira_login again, or set JIRA_PAT + PREFER_SSO_COOKIES=0 in mcp.json, or delete ${CONFIG.COOKIE_FILE} to use PAT.`
-      );
-    }
-    return res;
+  if (shouldRetryWithCookie(res.status)) {
+    const text = await res.text();
+    throw new Error(
+      `Jira HTTP ${res.status}: ${text.slice(0, 400)} SSO session expired, rejected, or never captured (browser automation/IdP). Run jira_login again, or delete ${CONFIG.COOKIE_FILE} and re-login.`
+    );
   }
-
-  if (patHeaders) {
-    const res = await fetch(url, merge(patHeaders));
-    if (res.ok || !cookieHeaders || !shouldRetryWithCookie(res.status)) {
-      return res;
-    }
-    return fetch(url, merge(cookieHeaders));
-  }
-
-  if (cookieHeaders) {
-    return fetch(url, merge(cookieHeaders));
-  }
-
-  throw new Error(
-    "Not authenticated. Set JIRA_PAT (or JIRA_API_TOKEN), or run jira_login once to save cookies."
-  );
+  return res;
 }
 
 function hintForJiraStatus(status) {
   if (status === 401) {
-    return " Unauthorized: run jira_login, or set JIRA_PAT and PREFER_SSO_COOKIES=0 (stale cookies/session-*.json can block PAT until deleted).";
+    return " Unauthorized: SSO session expired or was rejected. Run the jira_login tool again to refresh your cookies.";
   }
   if (status === 403) {
     return " Forbidden: authenticated but missing permission for this operation.";
@@ -187,11 +160,37 @@ export async function resolveProjectKeyForCreate(p) {
     return envDefault;
   }
 
+  // Fast path: use the boards cached at login (the user's own team board[s]).
+  // Only auto-select when no board hint was passed and the cache is unambiguous;
+  // a boardName hint falls through to the live resolution below.
+  const noBoardHint =
+    (p.boardId == null || String(p.boardId).trim() === "") &&
+    (p.boardName == null || String(p.boardName).trim() === "");
+  if (noBoardHint) {
+    const cached = readCachedBoards();
+    const cachedKeys = Array.isArray(cached?.projectKeys) ? cached.projectKeys : [];
+    if (cachedKeys.length === 1) {
+      console.error(
+        `[jira-mcp] create_ticket: auto-selected project "${cachedKeys[0]}" from boards cached at login.`
+      );
+      return cachedKeys[0];
+    }
+  }
+
   let boardsPayload;
   try {
     boardsPayload = await requestAgileJson(`/rest/agile/1.0/board?maxResults=50`);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    // Live Agile API failed — fall back to a single cached project if we have one.
+    const cached = readCachedBoards();
+    const cachedKeys = Array.isArray(cached?.projectKeys) ? cached.projectKeys : [];
+    if (noBoardHint && cachedKeys.length === 1) {
+      console.error(
+        `[jira-mcp] create_ticket: Agile API unavailable; using cached project "${cachedKeys[0]}" from login.`
+      );
+      return cachedKeys[0];
+    }
     throw new Error(
       `create_ticket: could not load boards (Jira Software Agile API). ${msg}\n` +
         `Pass **project** (project key), **boardName**, or **boardId**, or set **JIRA_DEFAULT_PROJECT** in MCP env. If this site has no Software boards, **project** is required.`
@@ -284,6 +283,59 @@ export async function resolveProjectKeyForCreate(p) {
 export async function listBoards(maxResults = 50) {
   const mr = Math.min(Math.max(1, maxResults), 50);
   return requestAgileJson(`/rest/agile/1.0/board?maxResults=${mr}`);
+}
+
+/**
+ * Fetch the user's Agile boards and cache them (with their project keys) to disk.
+ * Called right after a successful jira_login so later create_ticket calls can default
+ * to the user's own team board(s) instead of failing on ambiguity. Best-effort:
+ * returns { boards, projectKeys, cached } and never throws (Agile may be disabled).
+ */
+export async function fetchAndCacheBoards() {
+  let boards = [];
+  try {
+    const payload = await requestAgileJson(`/rest/agile/1.0/board?maxResults=50`);
+    boards = getBoardValues(payload).map((b) => ({
+      id: b.id,
+      name: b.name,
+      type: b.type,
+      projectKey: b.location?.projectKey ?? null,
+      projectName: b.location?.projectName ?? null,
+    }));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[jira-mcp] board discovery skipped (Agile API unavailable): ${msg}`);
+    return { boards: [], projectKeys: [], cached: false };
+  }
+
+  const projectKeys = uniqueProjectKeysFromBoards(
+    boards.filter((b) => b.projectKey).map((b) => ({ location: { projectKey: b.projectKey } }))
+  );
+  const record = { updatedAt: new Date().toISOString(), boards, projectKeys };
+  try {
+    fs.mkdirSync(path.dirname(CONFIG.BOARDS_CACHE_FILE), { recursive: true });
+    withCookieFileLockSync(CONFIG.BOARDS_CACHE_FILE, () => {
+      fs.writeFileSync(CONFIG.BOARDS_CACHE_FILE, JSON.stringify(record, null, 2), "utf8");
+    });
+  } catch (e) {
+    console.error(`[jira-mcp] could not write boards cache: ${e instanceof Error ? e.message : e}`);
+    return { boards, projectKeys, cached: false };
+  }
+  return { boards, projectKeys, cached: true };
+}
+
+/** Read the cached boards record ({ boards, projectKeys, updatedAt }) or null. */
+export function readCachedBoards() {
+  try {
+    if (!fs.existsSync(CONFIG.BOARDS_CACHE_FILE)) return null;
+    return withCookieFileLockSync(CONFIG.BOARDS_CACHE_FILE, () => {
+      const raw = fs.readFileSync(CONFIG.BOARDS_CACHE_FILE, "utf8");
+      const data = JSON.parse(raw);
+      return data && typeof data === "object" ? data : null;
+    });
+  } catch {
+    return null;
+  }
 }
 
 const ISSUE_FIELDS_FULL = [
@@ -476,40 +528,21 @@ export async function addAttachment(issueIdOrKey, filename, buffer, contentType)
   const key = encodeURIComponent(issueIdOrKey);
   const url = `${CONFIG.JIRA_BASE_URL}${CONFIG.restApiPrefix}/issue/${key}/attachments`;
 
-  const patHeaders = authHeadersForPat();
   const cookieHeaders = authHeadersForCookie();
+  if (!cookieHeaders) {
+    throw new Error("Not authenticated for attachment upload. Run jira_login once to save cookies.");
+  }
   const baseHeaders = { "X-Atlassian-Token": "no-check", Accept: "application/json" };
 
   const form = new FormData();
   const blob = new Blob([buffer], { type: contentType || "application/octet-stream" });
   form.append("file", blob, filename);
 
-  async function post(extra) {
-    return fetch(url, {
-      method: "POST",
-      headers: { ...baseHeaders, ...extra },
-      body: form,
-    });
-  }
-
-  let res;
-  if (patHeaders) {
-    res = await post(patHeaders);
-    if (!res.ok && cookieHeaders && shouldRetryWithCookie(res.status)) {
-      const form2 = new FormData();
-      const blob2 = new Blob([buffer], { type: contentType || "application/octet-stream" });
-      form2.append("file", blob2, filename);
-      res = await fetch(url, {
-        method: "POST",
-        headers: { ...baseHeaders, ...cookieHeaders },
-        body: form2,
-      });
-    }
-  } else if (cookieHeaders) {
-    res = await post(cookieHeaders);
-  } else {
-    throw new Error("Not authenticated for attachment upload.");
-  }
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { ...baseHeaders, ...cookieHeaders },
+    body: form,
+  });
 
   const text = await res.text();
   if (!res.ok) {

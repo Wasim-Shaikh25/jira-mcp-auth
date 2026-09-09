@@ -2,7 +2,7 @@ import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
 import { CONFIG } from "./config.js";
-import { withCookieFileLockSync } from "./cookie-lock.js";
+import { withCookieFileLockSync, deleteCookieFileSync } from "./cookie-lock.js";
 import { buildLoginToolResultText, logSsoFallbackToStderr } from "./sso-login-messages.js";
 
 /**
@@ -96,6 +96,15 @@ async function jiraSessionLooksReady(page) {
 export async function loginWithSSO() {
   fs.mkdirSync(path.dirname(CONFIG.COOKIE_FILE), { recursive: true });
 
+  // Force-delete any existing/stale cookie (and the boards cache derived from it)
+  // before a fresh login so the new session is never mixed with a prior one.
+  if (deleteCookieFileSync(CONFIG.COOKIE_FILE)) {
+    console.error(`[jira-mcp] Removed existing cookie file before re-login: ${CONFIG.COOKIE_FILE}`);
+  }
+  if (CONFIG.BOARDS_CACHE_FILE) {
+    deleteCookieFileSync(CONFIG.BOARDS_CACHE_FILE);
+  }
+
   const browser = await chromium.launch({ headless: false });
   let ready = false;
   let cookies = [];
@@ -153,7 +162,6 @@ export async function loginWithSSO() {
         "[jira-mcp] WARNING: No cookies captured — SSO may not have completed on this origin (redirects, pop-up blockers, or IdP blocking automation)."
       );
       logSsoFallbackToStderr({
-        patEnvKey: "JIRA_PAT (or JIRA_API_TOKEN)",
         cookieFile: CONFIG.COOKIE_FILE,
         logPrefix: "[jira-mcp]",
       });
@@ -170,7 +178,6 @@ export async function loginWithSSO() {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[jira-mcp] Browser login error:", msg);
     logSsoFallbackToStderr({
-      patEnvKey: "JIRA_PAT (or JIRA_API_TOKEN)",
       cookieFile: CONFIG.COOKIE_FILE,
       logPrefix: "[jira-mcp]",
     });
@@ -185,7 +192,6 @@ export async function loginWithSSO() {
  */
 export function loginToolResultText(result) {
   return buildLoginToolResultText({
-    patEnvKey: "JIRA_PAT (or JIRA_API_TOKEN)",
     cookieFile: result.cookiePath,
     cookieCount: result.cookieCount,
     sessionProbeOk: result.sessionProbeOk,

@@ -7,6 +7,7 @@ import {
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { loginWithSSO, loginToolResultText } from "./auth.js";
+import { startCookieKeepAlive } from "./cookie-refresh.js";
 import {
   executeJql,
   getTicket,
@@ -22,6 +23,7 @@ import {
   getAllStatuses,
   addAttachmentFromConfluence,
   addAttachmentFromPublicUrl,
+  fetchAndCacheBoards,
 } from "./jira.js";
 
 const server = new Server(
@@ -34,7 +36,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "jira_login",
       description:
-        "SSO login in a browser (Playwright); saves cookies for REST. If IdP redirects or automation block a session, use JIRA_PAT + PREFER_SSO_COOKIES=0 in mcp.json or delete the reported cookie file. When JIRA_PAT is set, REST prefers it unless PREFER_SSO_COOKIES and cookies override.",
+        "SSO login in a browser (Playwright); saves cookies for REST. Auth is SSO-cookie only. If IdP redirects or automation block a session, delete the reported cookie file and retry, completing SSO fully in the opened window.",
       inputSchema: { type: "object", properties: {} },
     },
     {
@@ -55,7 +57,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "get_ticket",
       description:
-        "Get full issue JSON from Jira. Uses JIRA_REST_API_PREFIX (e.g. /rest/api/2 or /rest/api/3). If you see 401, set JIRA_PAT or run jira_login once.",
+        "Get full issue JSON from Jira. Uses JIRA_REST_API_PREFIX (e.g. /rest/api/2 or /rest/api/3). If you see 401, run jira_login once.",
       inputSchema: {
         type: "object",
         properties: {
@@ -209,7 +211,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "list_boards",
       description:
-        "List Jira Software boards (GET /rest/agile/1.0/board). Use names/ids with create_ticket when project is ambiguous. Returns 404 if Agile is disabled or your site has no Software boards—in that case pass **project** or **JIRA_DEFAULT_PROJECT**.",
+        "List Jira Software boards (GET /rest/agile/1.0/board). Use names/ids with create_ticket when project is ambiguous. On jira_login these boards + their projects are cached; create_ticket then defaults to your board's project when you don't pass one (auto-selected only when a single project is cached). Returns 404 if Agile is disabled or your site has no Software boards—in that case pass **project** or **JIRA_DEFAULT_PROJECT**.",
       inputSchema: {
         type: "object",
         properties: {
@@ -262,7 +264,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "add_attachment_from_confluence",
       description:
-        "Download an attachment from Confluence (CONFLUENCE_BASE_URL + CONFLUENCE_PAT or SSO cookies) and upload it to a Jira issue.",
+        "Download an attachment from Confluence (CONFLUENCE_BASE_URL + Confluence SSO cookies) and upload it to a Jira issue.",
       inputSchema: {
         type: "object",
         properties: {
@@ -306,11 +308,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === "jira_login") {
     const result = await loginWithSSO();
+    // After a working session, discover and cache the user's team board(s)/project(s)
+    // so later create_ticket calls can default to them. Best-effort — never fails login.
+    let boardsSummary = "";
+    if (result.sessionProbeOk || result.cookieCount > 0) {
+      try {
+        const { boards, projectKeys, cached } = await fetchAndCacheBoards();
+        if (cached && boards.length > 0) {
+          const list = boards
+            .filter((b) => b.projectKey)
+            .slice(0, 15)
+            .map((b) => `  - "${b.name}" (id=${b.id}) → project ${b.projectKey}`)
+            .join("\n");
+          boardsSummary =
+            `\n\nDiscovered ${boards.length} board(s); projects: ${projectKeys.join(", ") || "(none)"}.\n` +
+            (list ? `${list}\n` : "") +
+            `create_ticket will default to your board's project when you don't pass one` +
+            (projectKeys.length > 1 ? " (multiple found — pass project/boardName to disambiguate)." : ".");
+        } else if (!cached) {
+          boardsSummary = "\n\nBoard discovery skipped (Agile boards unavailable on this site).";
+        }
+      } catch {
+        // ignore — board caching is optional
+      }
+    }
     return {
       content: [
         {
           type: "text",
-          text: loginToolResultText(result),
+          text: loginToolResultText(result) + boardsSummary,
         },
       ],
     };
@@ -462,6 +488,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
+
+// Keep the Jira session warm and warn early if the SSO cookie goes stale.
+startCookieKeepAlive();
 
 process.on("SIGINT", async () => {
   await transport.close();

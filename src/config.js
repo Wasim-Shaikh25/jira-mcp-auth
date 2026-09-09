@@ -4,20 +4,17 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { descriptionFormatFromEnv, isRestApiV2Prefix } from "./jira-rest.js";
 import { findMcpServerEnvForEntryScript } from "./mcp-server-discovery.js";
-import { resolveConfluenceCookiePath, resolveJiraCookiePath } from "./session-path.js";
+import {
+  resolveConfluenceCookiePath,
+  resolveJiraCookiePath,
+  resolveJiraBoardsCachePath,
+} from "./session-path.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const ENTRY_SCRIPT = path.join(PROJECT_ROOT, "src", "index.js");
 
 /** PATs must come only from Cursor MCP config (mcp.json), not from a project .env file. */
-const PAT_ENV_KEYS = new Set([
-  "JIRA_PAT",
-  "JIRA_API_TOKEN",
-  "CONFLUENCE_PAT",
-  "CONFLUENCE_API_TOKEN",
-]);
-
 const mcpServerEntry = findMcpServerEnvForEntryScript(ENTRY_SCRIPT);
 
 function loadEnvFile() {
@@ -30,7 +27,6 @@ function loadEnvFile() {
     const eq = trimmed.indexOf("=");
     if (eq === -1) continue;
     const key = trimmed.slice(0, eq).trim();
-    if (PAT_ENV_KEYS.has(key)) continue;
     let val = trimmed.slice(eq + 1).trim();
     if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
@@ -52,40 +48,6 @@ function applyJiraMcpEnvFromUserConfig() {
   }
 }
 
-function readPatFromMcpConfigOnly() {
-  const fromProcess =
-    (typeof process.env.JIRA_PAT === "string" && process.env.JIRA_PAT.trim()) ||
-    (typeof process.env.JIRA_API_TOKEN === "string" && process.env.JIRA_API_TOKEN.trim()) ||
-    "";
-  if (fromProcess) return fromProcess;
-  const block = mcpServerEntry?.env;
-  if (block && typeof block === "object") {
-    const p =
-      (typeof block.JIRA_PAT === "string" && block.JIRA_PAT.trim()) ||
-      (typeof block.JIRA_API_TOKEN === "string" && block.JIRA_API_TOKEN.trim()) ||
-      "";
-    if (p) return p;
-  }
-  return "";
-}
-
-function readConfluencePatFromMcpConfigOnly() {
-  const fromProcess =
-    (typeof process.env.CONFLUENCE_PAT === "string" && process.env.CONFLUENCE_PAT.trim()) ||
-    (typeof process.env.CONFLUENCE_API_TOKEN === "string" && process.env.CONFLUENCE_API_TOKEN.trim()) ||
-    "";
-  if (fromProcess) return fromProcess;
-  const block = mcpServerEntry?.env;
-  if (block && typeof block === "object") {
-    const p =
-      (typeof block.CONFLUENCE_PAT === "string" && block.CONFLUENCE_PAT.trim()) ||
-      (typeof block.CONFLUENCE_API_TOKEN === "string" && block.CONFLUENCE_API_TOKEN.trim()) ||
-      "";
-    if (p) return p;
-  }
-  return "";
-}
-
 loadEnvFile();
 applyJiraMcpEnvFromUserConfig();
 
@@ -101,9 +63,6 @@ const loginDefault = `${baseRaw}/login.jsp`;
 const restApiPrefix = (process.env.JIRA_REST_API_PREFIX || "/rest/api/3").replace(/\/$/, "");
 
 const jiraCookieFile = resolveJiraCookiePath(PROJECT_ROOT, baseRaw, process.env.JIRA_MCP_SERVER_KEY);
-
-const preferSsoCookies =
-  process.env.PREFER_SSO_COOKIES !== "0" && String(process.env.PREFER_SSO_COOKIES).toLowerCase() !== "false";
 
 export function isJiraRestApiV2() {
   return isRestApiV2Prefix(restApiPrefix);
@@ -125,7 +84,11 @@ export const CONFIG = {
   isJiraRestApiV2,
   LOGIN_URL: process.env.JIRA_LOGIN_URL || loginDefault,
   COOKIE_FILE: jiraCookieFile,
-  preferSsoCookies,
+  BOARDS_CACHE_FILE: resolveJiraBoardsCachePath(
+    PROJECT_ROOT,
+    baseRaw,
+    process.env.JIRA_MCP_SERVER_KEY
+  ),
   LOGIN_WAIT_MS: Math.max(
     30_000,
     (parseInt(process.env.JIRA_LOGIN_WAIT_SECONDS || "90", 10) || 90) * 1000
@@ -133,9 +96,6 @@ export const CONFIG = {
   LOGIN_POLL_MS: Math.max(500, parseInt(process.env.JIRA_LOGIN_POLL_MS || "2000", 10) || 2000),
   PROJECT_ROOT,
   mcpServerKey: mcpServerEntry?.key ?? null,
-  getPatToken: readPatFromMcpConfigOnly,
-  hasPat: () => Boolean(readPatFromMcpConfigOnly()),
-  getConfluencePatToken: readConfluencePatFromMcpConfigOnly,
   /** Cookie file for Confluence REST when using add_attachment_from_confluence (separate from Jira cookies). */
   getConfluenceAttachmentCookiePath() {
     const b = process.env.CONFLUENCE_BASE_URL?.replace(/\/$/, "").trim();

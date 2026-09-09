@@ -59,16 +59,17 @@ describe("issue-description", () => {
 });
 
 describe("sso-login-messages", () => {
-  it("buildLoginToolResultText includes PAT and cookie path", () => {
+  it("buildLoginToolResultText includes the cookie path and cookie count (SSO-only)", () => {
     const t = buildLoginToolResultText({
-      patEnvKey: "JIRA_PAT",
       cookieFile: "C:/app/cookies/session-jira.json",
       cookieCount: 1,
       sessionProbeOk: false,
     });
-    assert.ok(t.includes("JIRA_PAT"));
-    assert.ok(t.includes("PREFER_SSO_COOKIES=0"));
     assert.ok(t.includes("session-jira.json"));
+    assert.ok(t.includes("Cookies captured: 1"));
+    // SSO-only: no token guidance should remain.
+    assert.ok(!t.includes("JIRA_PAT"));
+    assert.ok(!t.includes("PREFER_SSO_COOKIES"));
   });
 });
 
