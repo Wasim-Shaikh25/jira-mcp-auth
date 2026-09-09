@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here.
 
+## 0.2.1
+
+### Fixed
+
+- **`execute_jql` on Jira Cloud.** Atlassian removed the classic
+  `/rest/api/2|3/search` JQL endpoint (it now returns HTTP 410 Gone). `execute_jql`
+  now falls back to the enhanced **`/rest/api/3/search/jql`** endpoint automatically
+  when the classic one is gone, normalizing the response to the usual `issues[]`
+  shape and passing through the new `nextPageToken` / `isLast` pagination fields.
+  Data Center sites that still expose the classic endpoint are unaffected.
+  - Note: the enhanced API rejects unbounded queries — include a restriction
+    (e.g. `project = X` or `assignee = currentUser()`), not just `ORDER BY`.
+
 ## 0.2.0
 
 ### Breaking changes

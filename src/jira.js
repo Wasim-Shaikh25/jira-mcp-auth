@@ -360,11 +360,46 @@ const ISSUE_FIELDS_FULL = [
  */
 export async function executeJql(jql, maxResults = 10) {
   const mr = Math.min(Math.max(1, maxResults), 100);
-  return requestJsonWithBody("POST", `${CONFIG.restApiPrefix}/search`, {
-    jql,
-    maxResults: mr,
-    fields: ["summary", "status", "assignee", "issuetype", "priority", "created", "updated"],
-  });
+  const fields = ["summary", "status", "assignee", "issuetype", "priority", "created", "updated"];
+
+  // Enhanced JQL search (Jira Cloud). The classic /search endpoint (v2 and v3) was
+  // deprecated and now returns HTTP 410 on Cloud; it is replaced by /rest/api/3/search/jql.
+  // See: https://developer.atlassian.com/cloud/jira/platform/search-and-reconcile/
+  async function enhancedSearch() {
+    const data = await requestJsonWithBody("POST", `/rest/api/3/search/jql`, {
+      jql,
+      maxResults: mr,
+      fields,
+    });
+    // Normalize to the classic shape callers expect (issues[]), and pass through
+    // the new pagination token / isLast so callers can page if needed.
+    return {
+      issues: Array.isArray(data?.issues) ? data.issues : [],
+      total: Array.isArray(data?.issues) ? data.issues.length : 0,
+      nextPageToken: data?.nextPageToken ?? null,
+      isLast: data?.isLast ?? true,
+    };
+  }
+
+  // On Data Center / older Cloud, the classic endpoint still works. Try it first
+  // using the configured prefix, and fall back to the enhanced endpoint on 410/404
+  // (classic search removed on this site).
+  try {
+    return await requestJsonWithBody("POST", `${CONFIG.restApiPrefix}/search`, {
+      jql,
+      maxResults: mr,
+      fields,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/HTTP 410/.test(msg) || /HTTP 404/.test(msg) || /search\/jql/i.test(msg)) {
+      console.error(
+        "[jira-mcp] classic /search is gone on this site (410); using enhanced /rest/api/3/search/jql."
+      );
+      return enhancedSearch();
+    }
+    throw e;
+  }
 }
 
 /**
