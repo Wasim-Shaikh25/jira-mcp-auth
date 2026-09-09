@@ -1,6 +1,6 @@
 {
   "name": "jira-mcp-oauth",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Model Context Protocol server for Atlassian Jira: browser SSO cookies for REST (with background session keep-alive), plus optional Confluence attachment helpers—configure for your own Jira site (Cloud or Data Center).",
   "type": "module",
   "engines": {

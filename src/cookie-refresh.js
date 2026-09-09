@@ -17,7 +17,9 @@ import { deleteCookieFileSync } from "./cookie-lock.js";
  *  - Silently re-authenticate against the SSO/IdP (that requires an interactive
  *    browser round-trip). When the session truly expires, run jira_login again.
  *
- * Interval: JIRA_KEEPALIVE_SECONDS (default 240s = 4 min). Set 0 to disable.
+ * Interval: JIRA_KEEPALIVE_SECONDS (default 120s = 2 min). Set 0 to disable. After a
+ * failed ping the loop retries quickly (JIRA_KEEPALIVE_RETRY_SECONDS, default 15s)
+ * instead of waiting a full interval, so a transient blip cannot let the session lapse.
  */
 
 let timer = null;
@@ -25,9 +27,16 @@ let consecutiveFailures = 0;
 let staleCookieDeleted = false;
 
 function intervalMs() {
-  const raw = parseInt(process.env.JIRA_KEEPALIVE_SECONDS || "240", 10);
-  const secs = Number.isFinite(raw) ? raw : 240;
+  const raw = parseInt(process.env.JIRA_KEEPALIVE_SECONDS || "120", 10);
+  const secs = Number.isFinite(raw) ? raw : 120;
   return secs <= 0 ? 0 : Math.max(30, secs) * 1000;
+}
+
+/** Fast retry delay after a failed ping (keeps the session warm despite a blip). */
+function retryMs() {
+  const raw = parseInt(process.env.JIRA_KEEPALIVE_RETRY_SECONDS || "15", 10);
+  const secs = Number.isFinite(raw) && raw > 0 ? raw : 15;
+  return Math.max(5, secs) * 1000;
 }
 
 /** Consecutive auth failures before the stale cookie file is hard-deleted. Default 3; 0 disables. */
@@ -90,17 +99,22 @@ export function startCookieKeepAlive() {
     console.error("[jira-mcp] Session keep-alive disabled (JIRA_KEEPALIVE_SECONDS=0).");
     return;
   }
-  console.error(`[jira-mcp] Session keep-alive every ${ms / 1000}s (SSO cookies).`);
-  timer = setInterval(() => {
-    void pingOnce();
-  }, ms);
+  console.error(
+    `[jira-mcp] Session keep-alive every ${ms / 1000}s (SSO cookies), fast-retry ${retryMs() / 1000}s after a miss.`
+  );
+  const tick = async () => {
+    const ok = await pingOnce();
+    const next = ok ? ms : retryMs();
+    timer = setTimeout(tick, next);
+    if (typeof timer.unref === "function") timer.unref();
+  };
+  timer = setTimeout(tick, 1000);
   if (typeof timer.unref === "function") timer.unref();
-  setTimeout(() => void pingOnce(), 3000).unref?.();
 }
 
 export function stopCookieKeepAlive() {
   if (timer) {
-    clearInterval(timer);
+    clearTimeout(timer);
     timer = null;
   }
 }
